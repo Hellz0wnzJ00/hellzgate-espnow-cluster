@@ -136,7 +136,7 @@ The final source changes do not yet have a repeat hardware test, and the actual
 SD files have not yet been read back. These limits remain open for community
 testing; successful compilation is not a claim of production readiness.
 
-## Follow-up source review â€” October 2, 2026
+## Follow-up source review - October 2, 2026
 
 All 73 tracked files were reviewed again, including shared headers and test
 stubs. Stale GNSS descriptions and misleading comments were corrected; no

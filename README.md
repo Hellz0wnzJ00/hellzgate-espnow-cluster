@@ -1,4 +1,4 @@
-# HellzGate ESP-NOW Cluster Firmware â€” Open-Source Beta
+# HellzGate ESP-NOW Cluster Firmware - Open-Source Beta
 
 > Some people spoon, we fork. Have fun and be safe! - Hellz
 
