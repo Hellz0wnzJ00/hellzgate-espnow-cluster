@@ -17,7 +17,13 @@ pin assignments. See the adaptation guidance below before using them elsewhere.
 
 **HellzGate Project by Hellz (Sean Clossey).**
 
-## October 5 beta update — SD uniques and scan modes
+---
+
+## Latest Update
+
+**October 5, 2026 · Beta**
+
+**SD unique-count fix • Wi-Fi/BLE modes • Channel priorities**
 
 Thanks to **HotBy73** for flagging the unique-count plateau. Wi-Fi and BLE
 shared a 65,536-entry RAM table. Once full, new address/type pairs could not
@@ -80,6 +86,8 @@ multi-scanner load. Community confirmation is welcome; this is still beta.
   raw captures containing locations or device addresses.
 - WDGW territory captures are a different metric from unique address counts.
   This correction does not itself prove increased territory captures.
+
+---
 
 ## Package
 
