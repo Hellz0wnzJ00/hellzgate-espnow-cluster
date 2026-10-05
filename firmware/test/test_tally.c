@@ -38,11 +38,11 @@ static void counts_a_single_ap(void)
     hg_record_t r = ap(1, HG_BAND_2G4, 0);
 
     assert(tally_add(&t, &r) == 1);
-    assert(t.total == 1);
-    assert(t.unique == 1);
-    assert(t.identifiable_unique == 1);
-    assert(t.total_band[HG_BAND_2G4] == 1);
-    assert(t.unique_node[0] == 1);
+    assert(t.counts.total == 1);
+    assert(t.counts.unique == 1);
+    assert(t.counts.identifiable_unique == 1);
+    assert(t.counts.total_band[HG_BAND_2G4] == 1);
+    assert(t.counts.unique_node[0] == 1);
 }
 
 // seeing the same box again is more observations but not more devices
@@ -54,8 +54,8 @@ static void repeats_do_not_inflate_unique(void)
     for (int i = 0; i < 5; i++)
         tally_add(&t, &r);
 
-    assert(t.total == 5);
-    assert(t.unique == 1);
+    assert(t.counts.total == 5);
+    assert(t.counts.unique == 1);
 }
 
 // rotating BLE addresses must not inflate the identifiable count
@@ -68,9 +68,9 @@ static void rotating_ble_never_counts_as_identifiable(void)
         tally_add(&t, &r);
     }
 
-    assert(t.total == 10);
-    assert(t.unique == 10);
-    assert(t.identifiable_unique == 0);
+    assert(t.counts.total == 10);
+    assert(t.counts.unique == 10);
+    assert(t.counts.identifiable_unique == 0);
 }
 
 // a resolvable address is still random so it stays out of identifiable too
@@ -81,8 +81,8 @@ static void resolvable_ble_is_not_identifiable(void)
                          HG_FLAG_BLE_RANDOM | HG_FLAG_BLE_RESOLVABLE);
 
     tally_add(&t, &r);
-    assert(t.unique == 1);
-    assert(t.identifiable_unique == 0);
+    assert(t.counts.unique == 1);
+    assert(t.counts.identifiable_unique == 0);
 }
 
 // a ble device on a fixed address is a real countable device
@@ -92,7 +92,7 @@ static void public_ble_is_identifiable(void)
     hg_record_t r = make(1, HG_TYPE_BLE, HG_BAND_2G4, 0, 0);
 
     tally_add(&t, &r);
-    assert(t.identifiable_unique == 1);
+    assert(t.counts.identifiable_unique == 1);
 }
 
 // two nodes hearing one ap is still one device, and both nodes get credit
@@ -105,12 +105,12 @@ static void same_device_from_two_nodes(void)
     tally_add(&t, &a);
     tally_add(&t, &b);
 
-    assert(t.total == 2);
-    assert(t.unique == 1);
-    assert(t.unique_node[2] == 1);
-    assert(t.unique_node[5] == 1);
-    assert(t.total_node[2] == 1);
-    assert(t.total_node[5] == 1);
+    assert(t.counts.total == 2);
+    assert(t.counts.unique == 1);
+    assert(t.counts.unique_node[2] == 1);
+    assert(t.counts.unique_node[5] == 1);
+    assert(t.counts.total_node[2] == 1);
+    assert(t.counts.total_node[5] == 1);
 }
 
 // one address showing up on both bands counts once overall and once per band
@@ -123,11 +123,11 @@ static void same_device_on_both_bands(void)
     tally_add(&t, &a);
     tally_add(&t, &b);
 
-    assert(t.unique == 1);
-    assert(t.unique_band[HG_BAND_2G4] == 1);
-    assert(t.unique_band[HG_BAND_5G] == 1);
-    assert(t.total_band[HG_BAND_2G4] == 1);
-    assert(t.total_band[HG_BAND_5G] == 1);
+    assert(t.counts.unique == 1);
+    assert(t.counts.unique_band[HG_BAND_2G4] == 1);
+    assert(t.counts.unique_band[HG_BAND_5G] == 1);
+    assert(t.counts.total_band[HG_BAND_2G4] == 1);
+    assert(t.counts.total_band[HG_BAND_5G] == 1);
 }
 
 static void bad_crc_is_dropped(void)
@@ -137,9 +137,9 @@ static void bad_crc_is_dropped(void)
     r.rssi = -10;   // touched after sealing so the crc no longer matches
 
     assert(tally_add(&t, &r) == 0);
-    assert(t.bad_crc == 1);
-    assert(t.total == 0);
-    assert(t.unique == 0);
+    assert(t.counts.bad_crc == 1);
+    assert(t.counts.total == 0);
+    assert(t.counts.unique == 0);
 }
 
 // crc only proves it arrived intact, a bad node id would index off the end
@@ -155,8 +155,8 @@ static void out_of_range_fields_are_dropped(void)
     hg_record_seal(&bad_band);
     assert(tally_add(&t, &bad_band) == 0);
 
-    assert(t.bad_field == 2);
-    assert(t.total == 0);
+    assert(t.counts.bad_field == 2);
+    assert(t.counts.total == 0);
 }
 
 // once the table fills the totals must stay honest even though uniques stall
@@ -169,9 +169,9 @@ static void full_table_keeps_totals_honest(void)
         assert(tally_add(&t, &r) == 1);
     }
 
-    assert(t.total == TALLY_MAX_DEVICES + 8);
-    assert(t.unique == TALLY_MAX_DEVICES);
-    assert(t.table_full == 8);
+    assert(t.counts.total == TALLY_MAX_DEVICES + 8);
+    assert(t.counts.unique == TALLY_MAX_DEVICES);
+    assert(t.counts.table_full == 8);
 }
 
 static void reset_clears_everything(void)
@@ -181,10 +181,10 @@ static void reset_clears_everything(void)
     tally_add(&t, &r);
 
     tally_reset(&t);
-    assert(t.total == 0);
-    assert(t.unique == 0);
+    assert(t.counts.total == 0);
+    assert(t.counts.unique == 0);
     assert(t.seen_count == 0);
-    assert(t.unique_node[0] == 0);
+    assert(t.counts.unique_node[0] == 0);
 }
 
 int main(void)

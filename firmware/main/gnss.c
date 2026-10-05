@@ -1,4 +1,4 @@
-// neo-6m nmea reader
+// UART GNSS reader for NMEA GGA/RMC sentences
 // one task sits on the uart, splits sentences on newline, checks the checksum
 // and keeps the last good fix. everything else reads a copy of it
 
@@ -227,8 +227,8 @@ static void take_line(char *s, int len)
 
     sentences++;
 
-    // the talker id in front changes with the constellation, gp for gps and gn
-    // when it has mixed in glonass, so only the last three letters are matched
+    // Match the sentence type independently of the two-character talker ID.
+    // GP identifies GPS; GN is used for combined GNSS data.
     if (len < 7)
         return;
 
@@ -337,8 +337,8 @@ static void gnss_task(void *arg)
             continue;
         }
 
-        // a sentence longer than the buffer is dropped whole rather than cut,
-        // half a sentence would still pass the length checks further down
+        // Reset the buffer on overflow. Remaining bytes before the newline
+        // may be collected as a fragment and must pass the normal parser checks.
         if (len >= NMEA_MAX - 1) {
             len = 0;
             rejected++;

@@ -251,7 +251,7 @@ int csv_header(char *out, size_t out_size)
 {
     int pos = 0;
 
-    // WiGLE-compatible field layout; values come from the current device.
+    // WiGLE-compatible metadata. Release/model strings below are hard-coded.
     put_str(out, out_size, &pos,
             CSV_VERSION ",appRelease=1.0.0,model=HellzGate C5,release=1.0.0,"
             "device=HellzGate,display=HellzGate,board=esp32c5,brand=HellzGate,"

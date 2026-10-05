@@ -9,9 +9,8 @@
 #include "esp_err.h"
 #include "tally.h"
 
-// the counts live in main and are updated on the collect path, so the page
-// reads them rather than keeping a second copy that could disagree
-esp_err_t web_start(const tally *counts);
+// counts come from the background tracker through a locked snapshot.
+esp_err_t web_start(void);
 
 // the access point on its own. the station side is untouched, so espnow, the
 // scanning and the logging all carry on whichever way this goes

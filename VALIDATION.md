@@ -1,3 +1,46 @@
+# Current beta verification — October 5, 2026
+
+This update was ported into the existing public ESP-NOW repository. Private
+wired-scanner source, configuration and tests were excluded. The existing
+public display driver is retained; it does not transport scanner records.
+Previous public comment corrections and HTML escaping are preserved.
+
+## Current checks
+
+- Public host tests exercise the exact disk index with 1,000,000 distinct keys
+  and 2,000,000 observations, collisions/cache eviction and I/O failures.
+  Queue loss/backlog, validation, RAM-only fallback, BLE mode changes and
+  ESP-NOW mode acknowledgements/retries are covered.
+- Public web checks exercise both mode requests, pending/applied state,
+  request failure and unique-count pending/incomplete messages. All 38 channels
+  remain covered at every supported offset.
+- All three public configurations (master, strapped scanner and NVS scanner)
+  built with ESP-IDF 5.5.3. All executed host tests passed, including CSV;
+  the earlier bench-workspace CSV execution block did not recur here.
+- Final source checks exclude private wired-scanner symbols, files, settings,
+  tests, bench logs, device/location data and machine paths. The existing
+  public display driver remains. No public-source image has yet been flashed.
+- The GCC Makefile was updated to include the new index/queue/mode tests;
+  this run used the Windows MSVC host harness, not GNU make.
+
+## Hardware evidence and open limits
+
+The related FullGate ESP-NOW bench source was tested with one M1/S1 pair:
+Wi-Fi-only produced 243 Wi-Fi rows and no BLE in approximately 50 seconds;
+mixed resumption produced 144 Wi-Fi and 354 BLE complete rows. A GPS fix with
+8 satellites and timestamped coordinates was observed. Final status reported
+3,797 rows written/saved, no SD errors, no link sequence loss/duplicates,
+no master-full events and no dropped/incomplete counting work.
+
+These are serial/status observations, not a read-back audit of the physical
+CSV. That bench source includes the private transport but ran ESP-NOW; this
+public port removes the wired transport and requires its own hardware check.
+The hardware unique-count overflow threshold was not reached. Long-run SD
+throughput, multiple scanners, restart behavior in each mode, and improved
+field capture yield remain unverified. Community beta testing is needed.
+
+## Earlier release history (not a claim about the current tree)
+
 # Review status - 2 October 2026
 
 This experimental source package builds successfully in all three 20-node
@@ -21,8 +64,9 @@ in README. Complete file coverage does not guarantee absence of vulnerabilities.
 
 ## Corrections and static checks
 
-Removed stale wired-transport notes and empty tests. Technical comments now
-describe current behavior. Restored two meaningful disabled configuration values
+Removed stale wired-transport notes and empty tests. Comments were revised,
+but a follow-up review found further stale wording; coverage is not proof that
+every statement or code path is correct. Restored two meaningful disabled configuration values
 that the earlier cleanup had incorrectly treated as comments: the FullGate
 SSD1306 selection and the standalone scanner's disabled hardware straps.
 
@@ -75,7 +119,8 @@ The revised scanner image has not yet been tested on hardware.
 
 ## Verification limits
 
-Only the limited hardware checks above have been performed; nothing was published.
+Only the limited hardware checks above have been performed. These checks preceded
+the public beta release; they do not establish production readiness.
 Compilation alone does not establish radio or storage reliability.
 Ten cross-compiler syntax checks passed without diagnostics; host tests were not
 executed. The local page passed JavaScript syntax checking and the provisioning
@@ -90,3 +135,16 @@ Other experimental reliability/privacy limitations are documented in README.
 The final source changes do not yet have a repeat hardware test, and the actual
 SD files have not yet been read back. These limits remain open for community
 testing; successful compilation is not a claim of production readiness.
+
+## Follow-up source review â€” October 2, 2026
+
+All 73 tracked files were reviewed again, including shared headers and test
+stubs. Stale GNSS descriptions and misleading comments were corrected; no
+executable firmware behavior was changed. All three variants built successfully
+from this working tree with ESP-IDF 5.5.3. Ten host-test translation units passed
+cross-compiler syntax checking, and the provisioning script parsed successfully.
+Host tests were not executed, and no new hardware validation was performed.
+Receive validation, delayed send callbacks, SD failure handling and malformed
+GNSS input still need focused regression tests and potential behavior changes.
+This review does not establish production readiness or replace the limitations
+above.

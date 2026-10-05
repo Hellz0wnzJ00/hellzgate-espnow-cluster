@@ -21,9 +21,9 @@ typedef struct {
     uint32_t records;
 } session_info;
 
-// starts a run. a name that is empty or all punctuation still gets a file, the
-// storage layer falls back to calling it run. starting while one is already
-// going stops that one first, so the file is always closed properly
+// Starts a run; an empty name becomes "run". Filename punctuation is replaced
+// with underscores. Starting while running stops the previous session first;
+// storage errors are reported separately and a successful close is not guaranteed.
 esp_err_t session_start(const char *name);
 
 void session_stop(void);

@@ -44,4 +44,8 @@ int storage_open_now(void);
 void storage_stats(char *path, size_t path_n, uint32_t *rows, uint32_t *saved,
                    uint32_t *errors, uint64_t *free_bytes);
 
+// serialize scratch-index I/O with CSV I/O, including the custom SPI driver.
+void storage_hold(void);
+void storage_release(void);
+
 #endif

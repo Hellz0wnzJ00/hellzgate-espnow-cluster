@@ -19,6 +19,8 @@ typedef int portMUX_TYPE;
 #define portEXIT_CRITICAL(m)      ((void)(m))
 #define portENTER_CRITICAL_ISR(m) ((void)(m))
 #define portEXIT_CRITICAL_ISR(m)  ((void)(m))
+#define portENTER_CRITICAL_SAFE(m) ((void)(m))
+#define portEXIT_CRITICAL_SAFE(m)  ((void)(m))
 
 #define pdMS_TO_TICKS(ms) ((TickType_t)(ms))
 

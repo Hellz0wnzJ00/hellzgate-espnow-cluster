@@ -1,4 +1,4 @@
-# HellzGate ESP-NOW Cluster Firmware — Open-Source Beta
+# HellzGate ESP-NOW Cluster Firmware â€” Open-Source Beta
 
 > Some people spoon, we fork. Have fun and be safe! - Hellz
 
@@ -16,6 +16,70 @@ hardware. The FullGate configurations are board-specific examples, not universal
 pin assignments. See the adaptation guidance below before using them elsewhere.
 
 **HellzGate Project by Hellz (Sean Clossey).**
+
+## October 5 beta update — SD uniques and scan modes
+
+Thanks to **HotBy73** for flagging the unique-count plateau. Wi-Fi and BLE
+shared a 65,536-entry RAM table. Once full, new address/type pairs could not
+increase the unique count, although total observations and CSV logging could
+continue. This was a table-capacity limit, not a 16-bit counter limit.
+
+- Exact SD overflow tracking keeps the first 49,152 distinct keys in RAM and
+  stores later keys in an SD index. Full addresses and types are compared, so
+  hash collisions do not merge different devices. This adds overflow storage;
+  it does not periodically empty the RAM table or reset the unique count.
+- The web page now offers **Wi-Fi Only** and **Wi-Fi + BLE** beside hotspot/fan.
+  Mixed mode is the boot default; the selection is not saved across master
+  restarts. The page reports whether online scanners applied the request.
+  Previously queued BLE rows can drain after a mode change.
+- The 56-step scan pattern revisits channels **6, 1, 11, 149, 44 and 157** four
+  times while covering all 38 original channels. Scanner starting positions
+  are staggered. Priorities came from a sampled trip, not universal channel
+  popularity; higher capture yield has not been measured. Region enforcement
+  and passive scanning remain unchanged.
+
+**Upgrade the master and every scanner together.** ESP-NOW protocol **0x8104**
+requires matching images; previous public images cannot join this version.
+The observation record and CSV layout are unchanged. This is source-only beta
+firmware; use the build configurations below for your actual hardware.
+
+### What has and has not been tested
+
+The corresponding FullGate ESP-NOW M1/S1 bench build stopped BLE in Wi-Fi-only
+mode and resumed BLE in mixed mode while Wi-Fi and SD recording continued.
+The GPS fix, timestamped coordinates and zero reported storage/link losses
+were observed in the short test. The public source is a separate ESP-NOW-only
+port; see VALIDATION.md for its build and host-test checks.
+
+**The hardware run has not yet crossed the old 65,536-unique limit.** Desktop
+stress tests passed 1,000,000 distinct keys and 2,000,000 observations, but
+that does not establish physical SD throughput or reliability under sustained
+multi-scanner load. Community confirmation is welcome; this is still beta.
+
+### Counting limits and community checks
+
+- A usable SD card is required for overflow. Without it, the RAM-only fallback
+  remains limited to 65,536 keys and reports incomplete counts after overflow.
+- The page shows pending work, dropped counting work, index errors and an
+  incomplete warning. Pending counts may catch up; incomplete counts remain
+  a lower bound for the rest of that boot. Valid rows still reach the CSV path
+  when counting fails. CSV and the index share the SD card, so slow media can
+  affect both. The queue holds 8,192 sightings and uses PSRAM.
+- `/sd/hg_unique_v1.tmp` is disposable index data, recreated at master boot.
+  Do not upload it as a capture log. Counts are since boot, including while
+  recording is paused; starting/stopping a session does not reset them.
+  This is not reboot persistence or power-loss recovery.
+- Storage and counters are finite: an index offset guard stops below 2 GiB;
+  counters remain 32-bit. The default table/index/cache/queue consume roughly
+  1.4 MiB of PSRAM. This removes the old working-SD table limit, not every limit.
+- To check the fix, collect more than 65,536 distinct address/type pairs with
+  `unique_tracker.backend` showing `ram+sd`, then let `pending` reach zero.
+  Compare against an independent deduplication of all rows from that boot;
+  report `incomplete`, `dropped`, `errors`, `high_water` and storage/link losses.
+  Include SD model, firmware revision and scanner count. Do not publicly share
+  raw captures containing locations or device addresses.
+- WDGW territory captures are a different metric from unique address counts.
+  This correction does not itself prove increased territory captures.
 
 ## Package
 
@@ -59,12 +123,8 @@ or other liability arising from the software or its use, as set out in
 
 ## Build
 
-Use an ESP-IDF environment targeting ESP32-C5. The starting firmware specifies
-ESP-IDF 5.5.1. This candidate's master and both scanner configurations compiled
-and linked successfully with ESP-IDF 5.5.3 on 2 October 2026. Version 5.5.1 was
-not re-tested. A limited master/one-scanner bench test passed before the final
-scanner-capacity adjustment and SD diagnostic guard; see VALIDATION.md for
-remaining checks. Those final source changes were rebuilt but not reflashed.
+Use ESP-IDF 5.5.3 targeting ESP32-C5. The three public configurations are
+validated separately from the bench source; current results are in VALIDATION.md.
 Run these commands inside `firmware/`. Use separate build directories/configs.
 
 FullGate master:
@@ -106,6 +166,10 @@ idf.py -B build_master "-DSDKCONFIG=build_master/sdkconfig" -p PORT flash monito
 Use the corresponding build directory and SDKCONFIG for each scanner.
 The FullGate overlays assume the existing FullGate pin layout and an 8 MB
 XIAO ESP32-C5 target. Do not apply these pin assignments to arbitrary boards.
+The September 30 FullGate PCB BOM specifies an onboard ATGM336H-5N31 GNSS
+module (U8); the earlier Base bench setup used a NEO-6M module. The reader
+parses NMEA GGA/RMC over UART. That shared format does not prove compatibility
+with the assembled production PCB: verify receiver configuration and wiring.
 Review configuration values before building. Use a new build directory when
 changing overlays; defaults do not replace values in an existing sdkconfig.
 
@@ -120,6 +184,8 @@ and select the master role. Leave GNSS, SD, display, fan, pin finder and SD benc
 checks disabled unless the corresponding hardware is connected and its pin map
 has been verified. Match flash size, partition layout and PSRAM settings to the
 actual module. This bare-master configuration has not been hardware-tested here.
+The current master requires PSRAM for its tally, and startup selftests also
+allocate PSRAM. Disabling peripherals alone does not make this a no-PSRAM build.
 
 A standalone scanner can use the NVS-ID build above without backplane straps.
 Assign a unique ID before use; the supplied scanner will not send without one.
@@ -159,6 +225,12 @@ and zero coordinates. Check exported data before uploading it anywhere.
 - Current-build 20-scanner field validation remains outstanding. The host harness
   uses one scanner/master pair and synchronous callbacks.
 - Power loss can discard buffered records, particularly before a GNSS fix.
+- Observation time and position are assigned at master reception; the wire
+  record has no scanner capture timestamp. Reporting delays affect that mapping.
+- The status/display clock uses a placeholder date before GNSS time is known;
+  it is not a real UTC date. Exported observations leave unknown times empty.
+- A full pending-time buffer can emit newer rows before older buffered rows.
+  Chronological CSV order is therefore not guaranteed under saturation.
 - SSIDs are untrusted input. CSV quoting preserves columns, but does not disable
   spreadsheet formulas or terminal control sequences. Import exports as text.
 

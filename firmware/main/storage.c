@@ -68,13 +68,13 @@ static int64_t flushed_us;
 // task. without this, stop can close the file underneath a write in progress
 static SemaphoreHandle_t busy;
 
-static void hold(void)
+void storage_hold(void)
 {
     if (busy != NULL)
         xSemaphoreTakeRecursive(busy, portMAX_DELAY);
 }
 
-static void release(void)
+void storage_release(void)
 {
     if (busy != NULL)
         xSemaphoreGiveRecursive(busy);
@@ -260,6 +260,10 @@ esp_err_t storage_mount(void)
 
     if (busy == NULL)
         busy = xSemaphoreCreateRecursiveMutex();
+    if (busy == NULL) {
+        ESP_LOGE(tag, "no mutex for shared SD access");
+        return ESP_ERR_NO_MEM;
+    }
 
 #ifdef CONFIG_HG_SD_OWN_DRIVER
     // Optional experimental SD driver. Fall back to the ESP-IDF driver
@@ -566,31 +570,31 @@ static void close_locked(void)
 
 esp_err_t storage_open(const char *name, int64_t start_unix)
 {
-    hold();
+    storage_hold();
     esp_err_t err = open_locked(name, start_unix);
-    release();
+    storage_release();
     return err;
 }
 
 void storage_write(const char *line)
 {
-    hold();
+    storage_hold();
     write_locked(line);
-    release();
+    storage_release();
 }
 
 void storage_tick(void)
 {
-    hold();
+    storage_hold();
     tick_locked();
-    release();
+    storage_release();
 }
 
 void storage_close(void)
 {
-    hold();
+    storage_hold();
     close_locked();
-    release();
+    storage_release();
 }
 
 void storage_stats(char *out_path, size_t path_n, uint32_t *out_rows,
@@ -598,7 +602,7 @@ void storage_stats(char *out_path, size_t path_n, uint32_t *out_rows,
 {
     // under the lock like everything else that touches path. the web task asks
     // for this while the collect task can be opening the next file
-    hold();
+    storage_hold();
 
     if (path_n > 0) {
         strncpy(out_path, path, path_n - 1);
@@ -609,7 +613,7 @@ void storage_stats(char *out_path, size_t path_n, uint32_t *out_rows,
     *out_saved = saved;
     *out_errors = errors;
 
-    release();
+    storage_release();
 
     *free_bytes = 0;
 
@@ -617,8 +621,10 @@ void storage_stats(char *out_path, size_t path_n, uint32_t *out_rows,
         return;
 
     uint64_t total = 0, avail = 0;
+    storage_hold();
     if (esp_vfs_fat_info(MOUNT_POINT, &total, &avail) == ESP_OK)
         *free_bytes = avail;
+    storage_release();
 }
 
 #else
@@ -629,6 +635,8 @@ esp_err_t storage_mount(void)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+void storage_hold(void) { }
+void storage_release(void) { }
 int storage_ready(void)      { return 0; }
 int storage_open_now(void)   { return 0; }
 

@@ -16,6 +16,7 @@
 #include "esp_wifi.h"
 
 #include "slotid.h"
+#include "scan_mode.h"
 #include "transport.h"
 
 static const char *tag = "espnow";
@@ -28,7 +29,7 @@ static const uint8_t bcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 enum {
     HG_FRAME_HELLO     = 1,   // node says it exists
     HG_FRAME_HELLO_ACK = 2,   // master broadcast, how a node learns its address
-    HG_FRAME_BEAT      = 3,   // liveness only, no records
+    HG_FRAME_BEAT      = 3,   // liveness and applied mode, no records
     HG_FRAME_RECORDS   = 4
 };
 
@@ -47,7 +48,9 @@ typedef struct __attribute__((packed)) {
 // sequence off hellos and beats and added the scanner's boot number to every
 // frame. still five records a frame. a scanner and a master that disagree ignore each other, and the
 // master says so once per node rather than guessing at what the fields mean
-#define HG_ESPNOW_PROTO_VERSION  0x0103u
+// experimental 0x8104 adds the requested mode to beacons and the applied mode
+// to beats. the high bit keeps this bench build separate from production.
+#define HG_ESPNOW_PROTO_VERSION  0x8104u
 #define ESPNOW_MTU     250
 
 // how many records actually fit in one frame
@@ -58,7 +61,7 @@ static uint32_t tx_seq;
 
 // espnow send is asynchronous. if we hand it a frame and then hop channels to
 // scan, the frame goes out on the wrong channel or not at all, so every send
-// waits for the radio to say it is finished before anything moves the channel.
+// waits for completion, but the bounded timeout path can return without one.
 static SemaphoreHandle_t tx_done;
 static volatile int tx_ok;
 
@@ -84,7 +87,8 @@ static int send_once(const uint8_t *mac, const void *buf, int len)
 {
     // a callback from a previous send that arrived late would otherwise be
     // taken as this send finishing, and every send after it reads the wrong
-    // result. clear it before we start
+    // result. Drain an already-arrived notification before starting; callbacks
+    // arriving after this point are not correlated to an individual send
     xSemaphoreTake(tx_done, 0);
 
     esp_err_t err = esp_now_send(mac, (const uint8_t *)buf, len);
@@ -210,6 +214,7 @@ static int note_frame(uint8_t id, const uint8_t *mac, const hg_frame *f)
     // its last one. if we had none, we are the one that restarted, and there
     // was no sequence to forget
     if (f->boot != n->boot_id) {
+        scan_mode_seen(id, (hg_scan_mode){ .mode = HG_SCAN_UNKNOWN });
         if (n->boot_id != 0) {
             n->restarts++;
             n->seq_known = 0;
@@ -259,7 +264,8 @@ static void add_peer(const uint8_t *mac)
         ESP_LOGW(tag, "add peer failed, %s", esp_err_to_name(err));
 }
 
-// runs in the wifi task so it does no work beyond copying
+// Runs in the Wi-Fi task: validates headers, updates status, queues records,
+// and enrolls scanners. Keep callback work bounded.
 static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
     // the version is read before the length. an older scanner sends a shorter
@@ -301,6 +307,15 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
         return;
     }
 
+    // reject malformed envelopes before changing liveness or sequence state.
+    int extra = f.kind == HG_FRAME_BEAT ? HG_SCAN_MODE_BYTES :
+                f.kind == HG_FRAME_RECORDS ? f.count * (int)sizeof(hg_record_t) : 0;
+    if ((f.kind != HG_FRAME_HELLO && f.kind != HG_FRAME_BEAT &&
+         f.kind != HG_FRAME_RECORDS) || len != HG_FRAME_HDR + extra ||
+        (f.kind != HG_FRAME_RECORDS && f.count != 0) ||
+        (f.kind == HG_FRAME_RECORDS && (f.count == 0 || f.count > ESPNOW_BATCH)))
+        return;
+
     if (!note_frame(f.node_id, info->src_addr, &f))
         return;
 
@@ -314,6 +329,7 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     }
 
     if (f.kind == HG_FRAME_BEAT) {
+        scan_mode_seen(f.node_id, scan_mode_unpack(data + HG_FRAME_HDR));
         nodes[f.node_id].heartbeats++;
         return;
     }
@@ -341,7 +357,15 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
         }
     }
 #else
-    if (f.kind == HG_FRAME_HELLO_ACK && !have_master) {
+    if (f.kind != HG_FRAME_HELLO_ACK || f.count != 0 ||
+        len != HG_FRAME_HDR + HG_SCAN_MODE_BYTES ||
+        (have_master && memcmp(master_mac, info->src_addr, 6) != 0))
+        return;
+    hg_scan_mode request = scan_mode_unpack(data + HG_FRAME_HDR);
+    if (request.mode > HG_SCAN_MIX || request.revision == 0)
+        return;
+    scan_mode_receive(data + HG_FRAME_HDR);
+    if (!have_master) {
         memcpy(master_mac, info->src_addr, 6);
         add_peer(master_mac);
         have_master = 1;
@@ -521,7 +545,10 @@ static void espnow_service(void)
         hg_frame beat = { .proto = HG_ESPNOW_PROTO_VERSION, .kind = HG_FRAME_BEAT,
                           .node_id = my_node_id, .seq = 0, .boot = boot_id,
                           .count = 0 };
-        send_frame(master_mac, &beat, sizeof beat);
+        uint8_t buf[HG_FRAME_HDR + HG_SCAN_MODE_BYTES];
+        memcpy(buf, &beat, sizeof beat);
+        scan_mode_pack(buf + HG_FRAME_HDR, scan_mode_applied());
+        send_frame(master_mac, buf, sizeof buf);
     }
 
     // then drain. one frame per call could not keep up with a sweep, the ring
@@ -542,7 +569,7 @@ static uint32_t espnow_collect(hg_record_t *out, uint32_t max)
     // our own task, the callback is too busy with one node's records to get a
     // reply out to another. at once a second a scanner with ble running took
     // over a minute to catch one, so the default is four times that. the frame
-    // is thirteen bytes, but it is still master airtime on a shared channel, which
+    // is eighteen bytes, but it is still master airtime on a shared channel, which
     // is why the interval is a setting rather than a number in here
     int64_t now_us = esp_timer_get_time();
     if (now_us - last_beacon_us >= (int64_t)CONFIG_HG_BEACON_MS * 1000) {
@@ -551,7 +578,10 @@ static uint32_t espnow_collect(hg_record_t *out, uint32_t max)
         hg_frame beacon = { .proto = HG_ESPNOW_PROTO_VERSION,
                             .kind = HG_FRAME_HELLO_ACK,
                             .node_id = 0, .seq = 0, .count = 0 };
-        esp_now_send(bcast, (const uint8_t *)&beacon, sizeof beacon);
+        uint8_t buf[HG_FRAME_HDR + HG_SCAN_MODE_BYTES];
+        memcpy(buf, &beacon, sizeof beacon);
+        scan_mode_pack(buf + HG_FRAME_HDR, scan_mode_wanted());
+        esp_now_send(bcast, buf, sizeof buf);
     }
 
     while (n < max && xQueueReceive(inbox, &out[n], 0) == pdTRUE)

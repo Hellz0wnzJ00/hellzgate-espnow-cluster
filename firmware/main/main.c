@@ -20,12 +20,14 @@
 #include "hg_record.h"
 #include "pending.h"
 #include "scan.h"
+#include "scan_mode.h"
 #include "screen.h"
 #include "selftest.h"
 #include "session.h"
 #include "slotid.h"
 #include "storage.h"
 #include "tally.h"
+#include "unique_tracker.h"
 #include "transport.h"
 #include "web.h"
 
@@ -36,14 +38,12 @@ static const hg_transport *link;
 
 #ifdef CONFIG_HG_ROLE_MASTER
 
-// the device table is the big one. at the default size it is far past what
-// internal memory can spare, so it lives in psram and is reached by pointer
-static tally *counts;
+
 
 // rows go out with printf and not through the logger. a log line would put a
 // level, a timestamp and a tag in front of every row and the file would not
-// load. the card gets the same row when a session is open, so a run captured
-// off the port and a run pulled off the card are the same file
+// load. The card receives the same row text while its file is open.
+// Serial capture also includes diagnostic logs unless CSV-only mode is enabled.
 static void csv_out(const char *s)
 {
     fputs(s, stdout);
@@ -106,8 +106,8 @@ static void took(const hg_record_t *r)
 {
     // a record the tally rejected failed its crc or carried a field out of
     // range. it does not go in the export either, or the csv carries data the
-    // counts already said was not real
-    if (!tally_add(counts, r))
+    // validation already said was not real
+    if (!unique_tracker_add(r))
         return;
 
     // the gate covers the held rows and the session transition together. stop
@@ -266,6 +266,10 @@ static void report_nodes(void)
 // else is on the page and in the log
 static void draw_status(void)
 {
+    unique_status status;
+    tally_counts snapshot;
+    unique_tracker_snapshot(&snapshot, &status);
+    const tally_counts *counts = &snapshot;
     session_info run;
     session_state(&run);
 
@@ -285,7 +289,8 @@ static void draw_status(void)
              run.name, run.running ? (run.on_card ? "rec" : "con") : "off");
     screen_line(1, line);
 
-    snprintf(line, sizeof line, "total %lu", (unsigned long)counts->total);
+    snprintf(line, sizeof line, "total %lu%s", (unsigned long)counts->total,
+             status.incomplete ? " !" : (status.pending ? " ~" : ""));
     screen_line(2, line);
 
     snprintf(line, sizeof line, "uniq %lu id %lu",
@@ -370,8 +375,6 @@ static void run_master(void)
     esp_log_level_set("*", ESP_LOG_NONE);
 #endif
 
-    tally_reset(counts);
-
     // 1472 bytes, too much to sit on the task stack next to the csv buffers
     static hg_record_t batch[32];
     int ticks = 0;
@@ -389,6 +392,13 @@ static void run_master(void)
         // once a second is enough noise on the console
         if (++ticks >= 50) {
             ticks = 0;
+            tally_counts snapshot;
+            unique_status status;
+            unique_tracker_snapshot(&snapshot, &status);
+            const tally_counts *counts = &snapshot;
+            ESP_LOGI(tag, "unique tracker: %s, pending %lu, dropped %lu, incomplete %d",
+                     status.sd ? "sd overflow" : "ram only",
+                     (unsigned long)status.pending, (unsigned long)status.dropped, status.incomplete);
             ESP_LOGI(tag, "total %lu, unique %lu, identifiable %lu, ap %lu, ble %lu, 2g4 %lu, 5g %lu",
                      (unsigned long)counts->total,
                      (unsigned long)counts->unique,
@@ -512,6 +522,8 @@ static void radio_task(void *arg)
             ble_start(slotid_get(), found);
         }
 
+        ble_service();
+
         if (scan_step())
             sweeps++;
 
@@ -598,6 +610,8 @@ void app_main(void)
              slotid_get(), slotid_get() + 1, HG_PROTOCOL_VERSION);
 #endif
 
+    scan_mode_init();
+
     // if this ever prints anything but 46 the packing broke
     ESP_LOGI(tag, "record is %d bytes", (int)sizeof(hg_record_t));
 
@@ -635,16 +649,6 @@ void app_main(void)
     // no card is a warning and not a stop, the console still carries the rows.
     // a run opens itself at boot as well as from the page, so a unit switched
     // on in the field is recording rather than waiting to be told
-    counts = heap_caps_malloc(sizeof *counts, MALLOC_CAP_SPIRAM);
-
-    if (counts == NULL) {
-        ESP_LOGE(tag, "no psram for the device table, %u bytes", (unsigned)sizeof *counts);
-        return;
-    }
-
-    ESP_LOGI(tag, "device table holds %d, %u kb of psram",
-             TALLY_MAX_DEVICES, (unsigned)(sizeof *counts / 1024));
-
     // held rows belong to the run they were taken in, so stopping settles them
     // into the current file instead of leaving them for the next session
     session_on_stop(settle_pending);
@@ -652,11 +656,11 @@ void app_main(void)
     fan_init();
 
     storage_mount();
+    unique_tracker_start();
     session_start("run");
 
-    // the page reads the counts straight out of the tally the collect path is
-    // filling, so what it shows and what the console prints cannot drift apart
-    web_start(counts);
+    // readers take a consistent snapshot; disk counting runs off the collect path.
+    web_start();
 
 #ifdef CONFIG_HG_SCREEN
     // Display refresh runs separately from record collection.

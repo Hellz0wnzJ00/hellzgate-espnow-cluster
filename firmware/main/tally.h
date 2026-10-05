@@ -15,7 +15,7 @@
 
 #include "hg_record.h"
 
-// how many distinct devices we can hold before uniques stop growing
+// RAM slots; an optional exact SD index holds addresses beyond this cache
 // must stay a power of two, the lookup masks against it
 #ifndef TALLY_MAX_DEVICES
 #ifdef CONFIG_HG_TALLY_MAX_DEVICES
@@ -59,7 +59,7 @@ typedef struct {
 
     uint32_t bad_crc;     // dropped, crc did not match
     uint32_t bad_field;   // dropped, band or node id out of range
-    uint32_t table_full;  // counted in totals but too late to track uniqueness
+    uint32_t table_full;  // observations whose uniqueness could not be checked
 
     uint32_t total_type[TALLY_TYPES];
     uint32_t unique_type[TALLY_TYPES];  // first sighting decides the type
@@ -69,8 +69,17 @@ typedef struct {
     uint32_t total_node[TALLY_NODES];
     uint32_t unique_node[TALLY_NODES];
 
+} tally_counts;
+
+// optional overflow store; updates its entry and returns the previous value.
+typedef int (*tally_overflow)(void *, const hg_record_t *, tally_seen *);
+
+typedef struct {
+    tally_counts counts;
     tally_seen seen[TALLY_MAX_DEVICES];
     uint32_t   seen_count;
+    tally_overflow overflow;
+    void *overflow_ctx;
 } tally;
 
 void tally_reset(tally *t);

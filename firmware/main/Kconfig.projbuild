@@ -15,19 +15,18 @@ config HG_ROLE_NODE
 endchoice
 
 config HG_TALLY_MAX_DEVICES
-    int "distinct devices the uniqueness tracker can hold"
+    int "slots in the RAM uniqueness table"
     depends on HG_ROLE_MASTER
     range 256 131072
     default 65536
     help
-      once this fills, totals and the csv carry on unchanged but the unique
-      count stops moving. every further observation of a device that is not in
-      the table is counted in table_full, so that is a count of observations
-      and not of devices.
-      it must stay a power of two, the lookup masks against it.
-
-      the table lives in PSRAM and requires approximately sixteen bytes per
-      device. choose a capacity that fits the target's available memory.
+      with an SD index, the first 75 percent of this capacity stays in RAM
+      and later keys use the exact SD index. without an index this is a
+      bounded fallback; totals and CSV continue when it fills and unique
+      counts are marked incomplete. table_full counts unchecked observations,
+      not distinct devices. capacity must stay a power of two.
+      the table requires approximately sixteen PSRAM bytes per slot;
+      the SD directory, cache and counting queue need additional PSRAM.
 
 config HG_MAX_NODES
     int "how many scanner nodes the cluster can hold"
@@ -126,15 +125,15 @@ config HG_GNSS_TX_GPIO
     depends on HG_GNSS
     default 5
     help
-      nothing is sent to a neo-6m at the moment so this pin is only reserved.
+      the UART TX pin is configured, but this reader sends no receiver commands.
 
 config HG_GNSS_BAUD
     int "receiver baud rate"
     depends on HG_GNSS
     default 9600
     help
-      a neo-6m leaves the factory at 9600. modules that have been reconfigured
-      run at 38400 or 115200.
+      must match the connected receiver configuration. 9600 is the supplied
+      default, not a guarantee for every module or saved receiver setting.
 
 config HG_SCREEN
     bool "drive an ssd1306 screen"

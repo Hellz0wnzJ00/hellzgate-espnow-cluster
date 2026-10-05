@@ -14,6 +14,10 @@
 #include "esp_now.h"
 #include "hg_record.h"
 #include "transport.h"
+#include "scan_mode.h"
+
+hg_scan_mode s_scan_mode_wanted(void);
+void s_scan_mode_note(hg_scan_mode mode);
 
 int hg_test_verbose = 0;
 int64_t hg_test_now_us = 0;
@@ -84,6 +88,7 @@ static uint32_t radio_frames;
 // master only hears a rebooted scanner's new boot number from a beat or a
 // records frame
 static int drop_broadcast;
+static int drop_beacon;
 
 esp_err_t esp_now_send(const uint8_t *mac, const uint8_t *data, size_t len)
 {
@@ -91,6 +96,8 @@ esp_err_t esp_now_send(const uint8_t *mac, const uint8_t *data, size_t len)
     int f = from == SCANNER ? next_fate() : OK;
 
     if (from == SCANNER && drop_broadcast && mac[0] == 0xff)
+        f = LOST;
+    if (from == MASTER && drop_beacon)
         f = LOST;
 
     if (from == SCANNER)
@@ -349,6 +356,25 @@ int main(void)
 
     // none of that is loss as far as the master can tell, and it never was
     assert(node->frames_lost == 0);
+
+    for (int mode = HG_SCAN_WIFI; mode <= HG_SCAN_MIX; mode++) {
+        assert(scan_mode_set((uint8_t)mode));
+        hg_scan_mode want = scan_mode_wanted();
+        drop_beacon = 1;
+        turn(2100);
+        assert(s_scan_mode_wanted().revision != want.revision);
+        drop_beacon = 0;
+        turn(1100);
+        assert(s_scan_mode_wanted().revision == want.revision);
+        assert(scan_mode_node(0).revision != want.revision);
+        s_scan_mode_note(s_scan_mode_wanted());
+        turn(2100);
+        assert(scan_mode_node(0).revision == want.revision);
+        assert(scan_mode_node(0).mode == mode);
+    }
+    hg_test_now_us += 7000000;
+    assert(scan_mode_node(0).mode == HG_SCAN_UNKNOWN);
+    puts("  radio mode retry, acknowledgement and expiry ok");
 
     printf("espnow tests ok, %lu records, %lu frames\n",
            (unsigned long)next_counter, (unsigned long)radio_frames);

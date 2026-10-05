@@ -1,6 +1,5 @@
-// neo-6m over uart
-// only gga and rmc are parsed. between them they carry everything a wigle row
-// wants and nothing else the receiver sends is used
+// UART GNSS input. GGA supplies position/fix data; RMC supplies UTC date/time.
+// Other receiver sentences are ignored. Match pins and baud to the hardware.
 
 #ifndef GNSS_H
 #define GNSS_H

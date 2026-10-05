@@ -16,5 +16,6 @@ void ble_start(uint8_t node_id, ble_sink sink);
 
 // how many advertising reports we have seen since boot
 uint32_t ble_seen(void);
+void ble_service(void);
 
 #endif

@@ -27,20 +27,22 @@ static scan_sink emit;
 // fit around the coexistence slots, so setting it achieved nothing except the
 // warning. left to the driver now
 
-static const uint8_t ch_2g4[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
-
-static const uint8_t ch_5g[] = {
-    36, 40, 44, 48, 52, 56, 60, 64,
-    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
-    149, 153, 157, 161, 165
+// experimental order from distinct wifi addresses in the shared October 3
+// trip window. the first six are revisited between groups of quieter channels.
+// each scanner covers the entire list, starting at a different place, so an
+// empty slot does not lose any channels. the driver still enforces the region.
+static const uint8_t channels[] = {
+    6, 1, 11, 149, 44, 157, 36, 153, 48, 9, 40, 161, 3, 2,
+    6, 1, 11, 149, 44, 157, 7, 4, 10, 8, 100, 5, 52, 132,
+    6, 1, 11, 149, 44, 157, 116, 165, 60, 140, 144, 108, 56, 64,
+    6, 1, 11, 149, 44, 157, 128, 104, 136, 120, 112, 12, 124, 13
 };
 
-// where we are in the sweep
-static int cur_band;   // 0 is 2g4, 1 is 5g
 static int cur_idx;
+static int sweep_steps;
 static int64_t sweep_start_us;
 static uint32_t sweep_ms;
-static uint32_t sweep_scan_us;   // time actually spent scanning, no home hops
+static uint32_t sweep_scan_us;   // chunk time, including any in-chunk reporting yields
 static uint32_t worst_away_ms;   // longest we were ever away from home
 static int64_t  last_home_us;
 
@@ -82,6 +84,7 @@ void scan_init(uint8_t node_id, scan_sink sink)
 {
     my_node_id = node_id;
     emit = sink;
+    cur_idx = (node_id * 5u) % sizeof channels;
     sweep_start_us = esp_timer_get_time();
 }
 
@@ -108,7 +111,7 @@ static void record_from_ap(const wifi_ap_record_t *ap, uint8_t band)
         emit(&r);
 }
 
-// one channel, passive only, we never transmit or probe
+// Passive Wi-Fi scan: no probe requests. ESP-NOW reporting still transmits.
 static int scan_channel(uint8_t ch, uint8_t band)
 {
     static wifi_ap_record_t found[MAX_AP];
@@ -172,56 +175,43 @@ static void go_home(void)
 
 int scan_step(void)
 {
-    const uint8_t *list = cur_band == 0 ? ch_2g4 : ch_5g;
-    int count = cur_band == 0 ? (int)sizeof ch_2g4 : (int)sizeof ch_5g;
-    uint8_t band = cur_band == 0 ? HG_BAND_2G4 : HG_BAND_5G;
-
-    esp_err_t berr = esp_wifi_set_band_mode(cur_band == 0 ? WIFI_BAND_MODE_2G_ONLY
-                                                          : WIFI_BAND_MODE_5G_ONLY);
-    if (berr != ESP_OK)
-        ESP_LOGW(tag, "band %d not accepted, %s", cur_band, esp_err_to_name(berr));
-
     int64_t t0 = esp_timer_get_time();
     int done = 0;
 
-    int first = cur_idx, found = 0, yields = 0;
-    for (int i = 0; i < CONFIG_HG_SCAN_CHUNK && cur_idx < count; i++, cur_idx++) {
-        found += scan_channel(list[cur_idx], band);
+    for (int i = 0; i < CONFIG_HG_SCAN_CHUNK; i++) {
+        uint8_t ch = channels[cur_idx];
+        int two = ch <= 14;
+        esp_err_t err = esp_wifi_set_band_mode(two ? WIFI_BAND_MODE_2G_ONLY
+                                                  : WIFI_BAND_MODE_5G_ONLY);
+        if (err == ESP_OK)
+            scan_channel(ch, two ? HG_BAND_2G4 : HG_BAND_5G);
+        else
+            ESP_LOGW(tag, "channel %u band refused, %s", ch, esp_err_to_name(err));
 
-        // the link gets the radio the moment it needs it, mid chunk or not
+        cur_idx = (cur_idx + 1) % sizeof channels;
+        sweep_steps++;
+
         if (yield_due != NULL && yield_due()) {
             go_home();
             yield_run();
-            yields++;
+        }
 
-            esp_wifi_set_band_mode(cur_band == 0 ? WIFI_BAND_MODE_2G_ONLY
-                                                 : WIFI_BAND_MODE_5G_ONLY);
+        if (sweep_steps == sizeof channels) {
+            sweep_steps = 0;
+            done = 1;
+            break;
         }
     }
 
-    uint32_t chunk_us = (uint32_t)(esp_timer_get_time() - t0);
-
-    ESP_LOGD(tag, "chunk %s ch %u to %u, %lu ms, %d found, %d yields",
-             cur_band == 0 ? "2g4" : "5g", list[first], list[cur_idx - 1],
-             (unsigned long)(chunk_us / 1000), found, yields);
-    sweep_scan_us += chunk_us;
-
-    if (cur_idx >= count) {
-        cur_idx = 0;
-        cur_band++;
-
-        if (cur_band > 1) {
-            cur_band = 0;
-            sweep_ms = (uint32_t)((esp_timer_get_time() - sweep_start_us) / 1000);
-            ESP_LOGI(tag, "sweep done in %lu ms, %lu ms scanning, longest away %lu ms",
-                     (unsigned long)sweep_ms,
-                     (unsigned long)(sweep_scan_us / 1000),
-                     (unsigned long)worst_away_ms);
-            sweep_start_us = esp_timer_get_time();
-            sweep_scan_us = 0;
-            worst_away_ms = 0;
-            done = 1;
-        }
+    sweep_scan_us += (uint32_t)(esp_timer_get_time() - t0);
+    if (done) {
+        sweep_ms = (uint32_t)((esp_timer_get_time() - sweep_start_us) / 1000);
+        ESP_LOGI(tag, "sweep done in %lu ms, %lu ms scanning, longest away %lu ms",
+                 (unsigned long)sweep_ms, (unsigned long)(sweep_scan_us / 1000),
+                 (unsigned long)worst_away_ms);
+        sweep_start_us = esp_timer_get_time();
+        sweep_scan_us = 0;
+        worst_away_ms = 0;
     }
 
     // back on the espnow channel before anyone can call us missing

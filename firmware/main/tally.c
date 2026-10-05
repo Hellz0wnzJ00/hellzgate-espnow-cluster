@@ -40,8 +40,12 @@ static tally_seen *slot_for(tally *t, const uint8_t *addr, uint8_t type)
     for (uint32_t probe = 0; probe < TALLY_MAX_DEVICES; probe++) {
         tally_seen *s = &t->seen[i];
 
-        if (!s->used)
+        if (!s->used) {
+            // leave spare slots so an overflow lookup never walks a full table.
+            if (t->overflow && t->seen_count >= TALLY_MAX_DEVICES * 3 / 4)
+                return NULL;
             return s;
+        }
         if (s->type == type && memcmp(s->addr, addr, 6) == 0)
             return s;
 
@@ -58,7 +62,7 @@ void tally_reset(tally *t)
 int tally_add(tally *t, const hg_record_t *r)
 {
     if (!hg_record_valid(r)) {
-        t->bad_crc++;
+        t->counts.bad_crc++;
         return 0;
     }
 
@@ -66,23 +70,27 @@ int tally_add(tally *t, const hg_record_t *r)
     // the values make sense, so range check before indexing anything
     if (r->band >= TALLY_BANDS || r->node_id >= TALLY_NODES ||
         r->type >= TALLY_TYPES) {
-        t->bad_field++;
+        t->counts.bad_field++;
         return 0;
     }
 
-    t->total++;
-    t->total_node[r->node_id]++;
-    t->total_type[r->type]++;
+    t->counts.total++;
+    t->counts.total_node[r->node_id]++;
+    t->counts.total_type[r->type]++;
 
     // ble sits on 2.4 physically but it does not go in the wifi band buckets,
     // or the wifi band numbers stop meaning wifi
     if (r->type != HG_TYPE_BLE)
-        t->total_band[r->band]++;
+        t->counts.total_band[r->band]++;
 
     tally_seen *s = slot_for(t, r->bssid, r->type);
+    tally_seen previous;
+    int on_card = s == NULL && t->overflow;
+    if (on_card && t->overflow(t->overflow_ctx, r, &previous))
+        s = &previous;
     if (s == NULL) {
         // totals stay right, we just cannot say if this one is new
-        t->table_full++;
+        t->counts.table_full++;
         return 1;
     }
 
@@ -90,26 +98,26 @@ int tally_add(tally *t, const hg_record_t *r)
         s->used = 1;
         s->type = r->type;
         memcpy(s->addr, r->bssid, 6);
-        t->seen_count++;
-        t->unique++;
-        t->unique_type[r->type]++;
+        if (!on_card) t->seen_count++;
+        t->counts.unique++;
+        t->counts.unique_type[r->type]++;
 
         if (is_identifiable(r))
-            t->identifiable_unique++;
+            t->counts.identifiable_unique++;
     }
 
     if (r->type != HG_TYPE_BLE) {
         uint8_t band_bit = (uint8_t)(1u << r->band);
         if (!(s->bands & band_bit)) {
             s->bands |= band_bit;
-            t->unique_band[r->band]++;
+            t->counts.unique_band[r->band]++;
         }
     }
 
     uint32_t node_bit = 1u << r->node_id;
     if (!(s->nodes & node_bit)) {
         s->nodes |= node_bit;
-        t->unique_node[r->node_id]++;
+        t->counts.unique_node[r->node_id]++;
     }
 
     return 1;

@@ -13,6 +13,7 @@
 #include "sdkconfig.h"
 
 #include "web.h"
+#include "unique_tracker.h"
 
 static const char *tag = "web";
 
@@ -32,11 +33,10 @@ static const char *tag = "web";
 #include "session.h"
 #include "storage.h"
 #include "transport.h"
+#include "scan_mode.h"
 
 // Status buffer includes per-node data and spare capacity. Overflow returns an error.
-#define JSON_MAX (1536 + HG_MAX_NODES * 2 * 320)
-
-static const tally *counts;
+#define JSON_MAX (1536 + HG_MAX_NODES * 448)
 
 // a buffer that knows when it is full. printf into a fixed array and the tail
 // just disappears, and half a json document still parses as far as it goes
@@ -101,7 +101,7 @@ static void put_node(sink *s, int *first, const char *link,
            "\"records\":%lu,\"frames\":%lu,\"lost\":%lu,\"dupes\":%lu,"
            "\"overflow\":%lu,\"master_full\":%lu,\"node_overflow\":%lu,"
            "\"wrong_id\":%lu,\"reframes\":%lu,"
-           "\"downs\":%lu,\"restarts\":%lu,\"last_seen_ms\":%lu}",
+           "\"downs\":%lu,\"restarts\":%lu,\"last_seen_ms\":%lu",
         *first ? "" : ",", (unsigned)id, link, state_name(n->state),
         (unsigned long)n->records, (unsigned long)n->frames,
         (unsigned long)n->frames_lost, (unsigned long)n->dupes,
@@ -111,6 +111,10 @@ static void put_node(sink *s, int *first, const char *link,
         (unsigned long)n->downs, (unsigned long)n->restarts,
         (unsigned long)n->last_seen_ms);
 
+    hg_scan_mode mode = scan_mode_node(id);
+    hg_scan_mode want = scan_mode_wanted();
+    put(s, ",\"scan_mode\":%u,\"scan_applied\":%d}", mode.mode,
+        n->state == HG_NODE_UP && mode.revision == want.revision && mode.mode == want.mode);
     *first = 0;
 }
 
@@ -136,6 +140,9 @@ static void build_status(sink *s)
         (long long)(esp_timer_get_time() / 1000000), when,
         web_ap_on(), fan_on());
 
+    hg_scan_mode mode = scan_mode_wanted();
+    put(s, "\"scan_mode\":%u,", mode.mode);
+
     put(s, "\"session\":{\"name\":");
     put_str(s, run.name);
     put(s, ",\"running\":%d,\"on_card\":%d,\"seconds\":%lu,\"records\":%lu},",
@@ -158,6 +165,15 @@ static void build_status(sink *s)
         (unsigned long)rows, (unsigned long)saved, (unsigned long)errors,
         (unsigned long long)(free_bytes >> 20));
 
+    tally_counts snapshot;
+    unique_status status;
+    unique_tracker_snapshot(&snapshot, &status);
+    const tally_counts *counts = &snapshot;
+    put(s, "\"unique_tracker\":{\"backend\":\"%s\",\"pending\":%lu,"
+           "\"dropped\":%lu,\"errors\":%lu,\"high_water\":%lu,\"incomplete\":%d},",
+        status.sd ? "ram+sd" : "ram",
+        (unsigned long)status.pending, (unsigned long)status.dropped,
+        (unsigned long)status.errors, (unsigned long)status.high_water, status.incomplete);
     put(s, "\"counts\":{\"scope\":\"since_boot\",\"total\":%lu,\"unique\":%lu,\"identifiable\":%lu,"
            "\"ap\":%lu,\"ble\":%lu,\"client\":%lu,"
            "\"g2_4\":%lu,\"g5\":%lu,"
@@ -277,8 +293,10 @@ static const char page[] =
 "<button class=s onclick='go(\"stop\")'>stop</button></section>"
 "<section><h2>board</h2><p>"
 "<button id=hs onclick='flip(\"hotspot\")'>hotspot</button>"
-"<button id=fn onclick='flip(\"fan\")'>fan</button></section>"
-"<section><h2>counts since boot</h2><div id=counts></div></section>"
+"<button id=fn onclick='flip(\"fan\")'>fan</button>"
+"<button id=sm onclick='setscan()'>Wi-Fi + BLE</button>"
+"<span id=scanstate></span></section>"
+"<section><h2>counts since boot</h2><div id=unique_status></div><div id=counts></div></section>"
 "<section><h2>position</h2><div id=gnss></div></section>"
 "<section><h2>card</h2><div id=card></div></section>"
 "<section><h2>nodes</h2><div id=nodes></div></section>"
@@ -286,12 +304,16 @@ static const char page[] =
 "function esc(v){let e=document.createElement('span');e.textContent=String(v);return e.innerHTML;}"
 "function rows(o){return Object.keys(o).map(k=>"
 "'<div class=r><span>'+esc(k)+'</span><span class=v>'+esc(o[k])+'</span></div>').join('')}"
+"var scanmode=1;\n"
 "function draw(d){"
 "document.getElementById('run').innerHTML=rows({"
 "name:d.session.name,state:d.session.running?'recording':'stopped',"
 "writing:d.session.on_card?'card':'console only',"
 "seconds:d.session.seconds,records:d.session.records,clock:d.time});"
 "document.getElementById('counts').innerHTML=rows(d.counts);"
+"let u=d.unique_tracker;document.getElementById('unique_status').textContent="
+"(u.incomplete?'INCOMPLETE - unique counts are a lower bound':u.pending?'Catching up - '+u.pending+' observations pending':'Unique count caught up')"
+"+' | '+u.backend+' | dropped '+u.dropped+' | errors '+u.errors;"
 "var g=d.gnss;document.getElementById('gnss').innerHTML=rows(g.fix?{"
 "latitude:g.lat,longitude:g.lon,altitude:g.alt_m+' m',"
 "accuracy:g.accuracy_m+' m',satellites:g.sats,age:g.age_ms+' ms'}:"
@@ -304,7 +326,15 @@ static const char page[] =
 "+n.records+' records, '+n.lost+' lost'+'</span></div>').join(''):"
 "'<div class=r><span>nothing has reported yet</span></div>';"
 "document.getElementById('hs').className=d.hotspot?'':'s';"
-"document.getElementById('fn').className=d.fan?'':'s';}"
+"document.getElementById('fn').className=d.fan?'':'s';"
+"scanmode=d.scan_mode;document.getElementById('sm').textContent=scanmode?'Wi-Fi + BLE':'Wi-Fi Only';"
+"var up=d.nodes.filter(n=>n.state=='up'),ok=up.filter(n=>n.scan_applied).length;"
+"document.getElementById('scanstate').textContent=up.length?ok+'/'+up.length+' online links applied':'waiting for scanners';}"
+"function setscan(){var b=document.getElementById('sm');b.disabled=true;"
+"fetch('/api/scan?mode='+(scanmode?'wifi':'mixed'),{method:'POST'})"
+".then(r=>{if(!r.ok)throw Error('request failed');return r.json()}).then(draw)"
+".catch(()=>{document.getElementById('scanstate').textContent='request failed'})"
+".finally(()=>{b.disabled=false})}"
 "function tick(){fetch('/api/status').then(r=>r.json()).then(draw).catch(()=>{})}"
 "function flip(what){fetch('/api/'+what,{method:'POST'})"
 ".then(r=>r.json()).then(draw)}"
@@ -435,6 +465,19 @@ static esp_err_t hotspot_post(httpd_req_t *req)
     return status_get(req);
 }
 
+static esp_err_t scan_post(httpd_req_t *req)
+{
+    char query[32], want[8];
+    if (httpd_req_get_url_query_str(req, query, sizeof query) != ESP_OK ||
+        httpd_query_key_value(query, "mode", want, sizeof want) != ESP_OK ||
+        (strcmp(want, "wifi") != 0 && strcmp(want, "mixed") != 0)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mode must be wifi or mixed");
+        return ESP_FAIL;
+    }
+    scan_mode_set(strcmp(want, "mixed") == 0 ? HG_SCAN_MIX : HG_SCAN_WIFI);
+    return status_get(req);
+}
+
 static esp_err_t fan_post(httpd_req_t *req)
 {
     char query[32];
@@ -448,9 +491,9 @@ static esp_err_t fan_post(httpd_req_t *req)
     return status_get(req);
 }
 
-esp_err_t web_start(const tally *t)
+esp_err_t web_start(void)
 {
-    counts = t;
+
     start_ap();
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -475,6 +518,7 @@ esp_err_t web_start(const tally *t)
         { .uri = "/api/start",   .method = HTTP_POST, .handler = start_post },
         { .uri = "/api/stop",    .method = HTTP_POST, .handler = stop_post },
         { .uri = "/api/hotspot", .method = HTTP_POST, .handler = hotspot_post },
+        { .uri = "/api/scan",    .method = HTTP_POST, .handler = scan_post },
         { .uri = "/api/fan",     .method = HTTP_POST, .handler = fan_post },
     };
 
@@ -493,9 +537,9 @@ esp_err_t web_start(const tally *t)
 
 #else
 
-esp_err_t web_start(const tally *t)
+esp_err_t web_start(void)
 {
-    (void)t;
+
     ESP_LOGI(tag, "not built in");
     return ESP_ERR_NOT_SUPPORTED;
 }

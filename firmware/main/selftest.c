@@ -103,36 +103,36 @@ static void test_tally(void)
     make(&r, 0x02, HG_BAND_5G, 1, HG_TYPE_AP, 0, "two");
     tally_add(&t, &r);
 
-    check(t.total == 4, "total counts every observation");
-    check(t.unique == 2, "unique de dupes by address");
-    check(t.unique_band[HG_BAND_2G4] == 1, "one unique on 2g4");
-    check(t.unique_band[HG_BAND_5G] == 2, "two unique on 5g");
-    check(t.unique_node[0] == 1 && t.unique_node[1] == 2, "per node uniques split");
+    check(t.counts.total == 4, "total counts every observation");
+    check(t.counts.unique == 2, "unique de dupes by address");
+    check(t.counts.unique_band[HG_BAND_2G4] == 1, "one unique on 2g4");
+    check(t.counts.unique_band[HG_BAND_5G] == 2, "two unique on 5g");
+    check(t.counts.unique_node[0] == 1 && t.counts.unique_node[1] == 2, "per node uniques split");
 
     // a rotating ble address counts but is not identifiable
     make(&r, 0x03, HG_BAND_2G4, 0, HG_TYPE_BLE, HG_FLAG_BLE_RANDOM, NULL);
     tally_add(&t, &r);
-    check(t.unique == 3 && t.identifiable_unique == 2, "random ble is not identifiable");
-    check(t.unique_type[HG_TYPE_AP] == 2 && t.unique_type[HG_TYPE_BLE] == 1,
+    check(t.counts.unique == 3 && t.counts.identifiable_unique == 2, "random ble is not identifiable");
+    check(t.counts.unique_type[HG_TYPE_AP] == 2 && t.counts.unique_type[HG_TYPE_BLE] == 1,
           "uniques split by type");
 
     // a ble device with a fixed public address is countable like anything else
     make(&r, 0x06, HG_BAND_2G4, 0, HG_TYPE_BLE, 0, "watch");
     tally_add(&t, &r);
-    check(t.unique == 4 && t.identifiable_unique == 3, "public ble is identifiable");
+    check(t.counts.unique == 4 && t.counts.identifiable_unique == 3, "public ble is identifiable");
 
     // a corrupt record is dropped, not counted
     make(&r, 0x04, HG_BAND_2G4, 0, HG_TYPE_AP, 0, "bad");
     r.crc8 ^= 0xff;
     tally_add(&t, &r);
-    check(t.total == 6 && t.bad_crc == 1, "bad crc dropped");
+    check(t.counts.total == 6 && t.counts.bad_crc == 1, "bad crc dropped");
 
     // and one that survived the crc but carries nonsense, this is the trust boundary
     make(&r, 0x05, 7, 0, HG_TYPE_AP, 0, "wide");
     r.band = 7;
     hg_record_seal(&r);
     tally_add(&t, &r);
-    check(t.bad_field == 1, "out of range band dropped");
+    check(t.counts.bad_field == 1, "out of range band dropped");
 
     heap_caps_free(tp);
     tp = NULL;
